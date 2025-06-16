@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -10,21 +11,27 @@ from telegram.ext import (
     filters,
     CallbackContext,
 )
-from datetime import time, datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 import pytz
 from threading import Thread
 from flask import Flask
 import asyncio
 
+# --- Logging setup ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 
-LANGUAGE, LEVEL, NOTIFY_TIME = range(3)
+# --- Conversation states ---
+LANGUAGE, LEVEL, NOTIFY_TIME, EMAIL = range(4)
 
+# --- Bot data ---
 languages = ['English', 'French']
 levels = ['A1', 'A2', 'B1', 'B2']
+DATA_FILE = "users.json"
+TIMEZONE = pytz.timezone("America/New_York")
 
+# --- Sample lessons ---
 lessons = {
     'English': {
         'A1': [
@@ -45,6 +52,7 @@ lessons = {
     },
 }
 
+# --- Web server for Render keep-alive ---
 app = Flask("")
 
 @app.route("/")
@@ -54,141 +62,148 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
+# --- Utility: Save user data ---
+def save_user_data(user_id, data):
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r") as f:
+                all_data = json.load(f)
+        else:
+            all_data = {}
+        all_data[str(user_id)] = data
+        with open(DATA_FILE, "w") as f:
+            json.dump(all_data, f, indent=2)
+    except Exception as e:
+        logging.error(f"Error saving user data: {e}")
+
+# --- Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[lang] for lang in languages]
     await update.message.reply_text(
-        "Please choose your language:",
+        "👋 Welcome to WordNest!\nPlease choose your language 🌐:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return LANGUAGE
 
 async def language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_lang = update.message.text
-    if user_lang not in languages:
-        await update.message.reply_text("Please choose a valid language.")
+    lang = update.message.text
+    if lang not in languages:
+        await update.message.reply_text("❗ Please choose a valid language.")
         return LANGUAGE
-    context.user_data['language'] = user_lang
+    context.user_data['language'] = lang
 
     keyboard = [[lvl] for lvl in levels]
     await update.message.reply_text(
-        f"Selected language: {user_lang}\nPlease choose your level:",
+        f"✅ Selected language: {lang}\nNow choose your level 📚:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return LEVEL
 
 async def level_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_level = update.message.text
-    if user_level not in levels:
-        await update.message.reply_text("Please choose a valid level.")
+    level = update.message.text
+    if level not in levels:
+        await update.message.reply_text("❗ Please choose a valid level.")
         return LEVEL
-    context.user_data['level'] = user_level
+    context.user_data['level'] = level
 
     await update.message.reply_text(
-        "At what hour (0-23) do you want to receive the daily notification?"
+        "🕒 What time should we send your daily word?\nFormat: HH:MM (e.g. 06:00 or 20:30) — New York Time 🇺🇸"
     )
     return NOTIFY_TIME
 
 async def notify_time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if not text.isdigit():
-        await update.message.reply_text("Please send a number between 0 and 23.")
-        return NOTIFY_TIME
-    hour = int(text)
-    if not (0 <= hour <= 23):
-        await update.message.reply_text("Hour must be between 0 and 23.")
+    try:
+        notify_time = datetime.strptime(text, "%H:%M").time()
+    except ValueError:
+        await update.message.reply_text("❗ Invalid time format. Please send like 08:30 or 21:00.")
         return NOTIFY_TIME
 
-    context.user_data['notify_hour'] = hour
+    context.user_data['notify_time'] = text
+    await update.message.reply_text("📧 Great! Now please enter your email address:")
+    return EMAIL
+
+async def email_collected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    email = update.message.text
+    context.user_data['email'] = email
+
     user_id = update.message.from_user.id
-    context.application.user_data[user_id] = context.user_data.copy()
-    context.application.user_data[user_id]['word_index'] = 0
+    save_user_data(user_id, context.user_data.copy())
 
-    job_queue = context.application.job_queue
+    await update.message.reply_text(
+        f"✅ All set! We'll send your daily word at {context.user_data['notify_time']} ⏰\nUse /cancel to stop."
+    )
 
-    # Remove old jobs if exist
-    current_jobs = job_queue.get_jobs_by_name(str(user_id))
-    for job in current_jobs:
-        job.schedule_removal()
-
-    tz = pytz.timezone('Asia/Tehran')  # تغییر منطقه زمانی در صورت نیاز
-    now = datetime.now(tz)
-    target_time = time(hour=hour, minute=0, second=0, tzinfo=tz)
-
-    first_time = datetime.combine(now.date(), target_time)
+    # --- Schedule job ---
+    hour, minute = map(int, context.user_data['notify_time'].split(':'))
+    now = datetime.now(TIMEZONE)
+    first_time = datetime.combine(now.date(), dt_time(hour, minute, tzinfo=TIMEZONE))
     if first_time < now:
         first_time += timedelta(days=1)
 
-    delay_seconds = (first_time - now).total_seconds()
+    delay = (first_time - now).total_seconds()
 
+    job_queue = context.application.job_queue
     job_queue.run_repeating(
         callback=send_daily_word,
-        interval=24*3600,
-        first=delay_seconds,
+        interval=86400,
+        first=delay,
         name=str(user_id),
         data={'user_id': user_id}
     )
 
-    await update.message.reply_text(
-        f"Great! You will get a daily word at {hour}:00.\nUse /cancel to stop notifications."
-    )
     return ConversationHandler.END
 
 async def send_daily_word(context: CallbackContext):
-    job = context.job
-    user_id = job.data['user_id']
-
-    user_data = context.application.user_data.get(user_id)
-    if not user_data:
-        job.schedule_removal()
+    user_id = context.job.data['user_id']
+    try:
+        with open(DATA_FILE, 'r') as f:
+            all_data = json.load(f)
+        data = all_data.get(str(user_id))
+        if not data:
+            return
+    except:
         return
 
-    lang = user_data.get('language')
-    level = user_data.get('level')
-    idx = user_data.get('word_index', 0)
-
-    if not lang or not level:
-        job.schedule_removal()
-        return
+    lang = data['language']
+    level = data['level']
+    word_index = data.get('word_index', 0)
 
     word_list = lessons.get(lang, {}).get(level, [])
     if not word_list:
-        job.schedule_removal()
         return
 
-    if idx >= len(word_list):
-        idx = 0
+    if word_index >= len(word_list):
+        word_index = 0
 
-    word_info = word_list[idx]
-
+    word = word_list[word_index]
     message = (
-        f"📚 Daily word:\n\n"
-        f"Word: {word_info['word']}\n"
-        f"Meaning: {word_info['meaning']}\n"
-        f"Example: {word_info['sentence']}"
+        f"📘 Daily Word:\n\n"
+        f"🔤 Word: {word['word']}\n"
+        f"📖 Meaning: {word['meaning']}\n"
+        f"📝 Example: {word['sentence']}"
     )
 
-    try:
-        await context.bot.send_message(chat_id=user_id, text=message)
-    except Exception as e:
-        logging.error(f"Error sending message to {user_id}: {e}")
+    await context.bot.send_message(chat_id=user_id, text=message)
 
-    user_data['word_index'] = idx + 1
+    # Update index
+    data['word_index'] = word_index + 1
+    with open(DATA_FILE, 'w') as f:
+        all_data[str(user_id)] = data
+        json.dump(all_data, f, indent=2)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    job_queue = context.application.job_queue
-    current_jobs = job_queue.get_jobs_by_name(str(user_id))
-    for job in current_jobs:
+    jobs = context.application.job_queue.get_jobs_by_name(str(user_id))
+    for job in jobs:
         job.schedule_removal()
-
-    await update.message.reply_text("Notifications canceled. Use /start to begin again.")
+    await update.message.reply_text("❌ Notifications canceled. Use /start to begin again.")
     return ConversationHandler.END
 
+# --- Main ---
 def main():
     TOKEN = os.getenv("TOKEN")
-
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
+    Thread(target=run_flask).start()
 
     app_telegram = ApplicationBuilder().token(TOKEN).build()
 
@@ -198,13 +213,13 @@ def main():
             LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, language_chosen)],
             LEVEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, level_chosen)],
             NOTIFY_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, notify_time_chosen)],
+            EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, email_collected)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     app_telegram.add_handler(conv_handler)
     app_telegram.add_handler(CommandHandler("cancel", cancel))
-
     app_telegram.run_polling()
 
 if __name__ == "__main__":
