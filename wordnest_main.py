@@ -11,6 +11,11 @@ from telegram.ext import (
 )
 from datetime import time, datetime, timedelta
 import pytz
+from threading import Thread
+
+# Flask برای keep_alive
+from flask import Flask
+import asyncio
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
@@ -24,22 +29,31 @@ levels = ['A1', 'A2', 'B1', 'B2']
 lessons = {
     'English': {
         'A1': [
-            {"word": "apple", "meaning": "سیب", "sentence": "I eat an apple every day."},
-            {"word": "book", "meaning": "کتاب", "sentence": "She reads a book."},
-            {"word": "cat", "meaning": "گربه", "sentence": "The cat is sleeping."},
+            {"word": "apple", "meaning": "A fruit", "sentence": "I eat an apple every day."},
+            {"word": "book", "meaning": "A set of pages", "sentence": "She reads a book."},
+            {"word": "cat", "meaning": "A small animal", "sentence": "The cat is sleeping."},
         ],
         'A2': [
-            {"word": "travel", "meaning": "سفر کردن", "sentence": "We travel to new places."},
-            {"word": "weather", "meaning": "آب و هوا", "sentence": "The weather is nice today."},
+            {"word": "travel", "meaning": "To go somewhere", "sentence": "We travel to new places."},
+            {"word": "weather", "meaning": "The state of the atmosphere", "sentence": "The weather is nice today."},
         ],
     },
     'French': {
         'A1': [
-            {"word": "pomme", "meaning": "سیب", "sentence": "Je mange une pomme."},
-            {"word": "livre", "meaning": "کتاب", "sentence": "Elle lit un livre."},
+            {"word": "pomme", "meaning": "Apple", "sentence": "Je mange une pomme."},
+            {"word": "livre", "meaning": "Book", "sentence": "Elle lit un livre."},
         ],
     },
 }
+
+app = Flask("")
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[lang] for lang in languages]
@@ -71,7 +85,7 @@ async def level_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['level'] = user_level
 
     await update.message.reply_text(
-        "At what hour do you want to receive the daily notification? (0-23)"
+        "At what hour (0-23) do you want to receive the daily notification?"
     )
     return NOTIFY_TIME
 
@@ -88,16 +102,16 @@ async def notify_time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['notify_hour'] = hour
     user_id = update.message.from_user.id
     context.application.user_data[user_id] = context.user_data.copy()
-
     context.application.user_data[user_id]['word_index'] = 0
 
     job_queue = context.application.job_queue
 
+    # Remove old jobs if exist
     current_jobs = job_queue.get_jobs_by_name(str(user_id))
     for job in current_jobs:
         job.schedule_removal()
 
-    tz = pytz.timezone('Asia/Tehran')
+    tz = pytz.timezone('Asia/Tehran')  # تغییر منطقه زمانی در صورت نیاز
     now = datetime.now(tz)
     target_time = time(hour=hour, minute=0, second=0, tzinfo=tz)
 
@@ -157,7 +171,7 @@ async def send_daily_word(context: CallbackContext):
     try:
         await context.bot.send_message(chat_id=user_id, text=message)
     except Exception as e:
-        print(f"Error sending message to {user_id}: {e}")
+        logging.error(f"Error sending message to {user_id}: {e}")
 
     user_data['word_index'] = idx + 1
 
@@ -172,8 +186,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
-    TOKEN = "YOUR_BOT_TOKEN_HERE"
-    app = ApplicationBuilder().token(TOKEN).build()
+    TOKEN = os.getenv("TOKEN")
+
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
+
+    app_telegram = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -185,10 +203,10 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("cancel", cancel))
+    app_telegram.add_handler(conv_handler)
+    app_telegram.add_handler(CommandHandler("cancel", cancel))
 
-    app.run_polling()
+    app_telegram.run_polling()
 
 if __name__ == "__main__":
     main()
