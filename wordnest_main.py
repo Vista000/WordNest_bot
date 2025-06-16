@@ -1,4 +1,5 @@
 import logging
+import requests
 import os
 import json
 from telegram import Update, ReplyKeyboardMarkup
@@ -27,6 +28,8 @@ LANGUAGE, LEVEL, NOTIFY_TIME, EMAIL = range(4)
 
 # --- Bot data ---
 languages = ['English', 'French']
+API_URL = os.getenv("API_URL")
+SECRET_TOKEN = os.getenv("SECRET_TOKEN")
 levels = ['A1', 'A2', 'B1', 'B2']
 DATA_FILE = "users.json"
 TIMEZONE = pytz.timezone("America/New_York")
@@ -133,7 +136,19 @@ async def email_collected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ All set! We'll send your daily word at {context.user_data['notify_time']} ⏰\nUse /cancel to stop."
     )
-
+def save_user(user_id, lang, level, time, email):
+    url = "https://script.google.com/macros/s/AKfycb.../exec"
+    payload = {
+        "token": "SECRET_TOKEN", 
+        "user_id": str(user_id),
+        "language": lang,
+        "level": level,
+        "time": time,
+        "email": email
+    }
+    response = requests.post(url, json=payload)
+    return response.text  # "Success" یا "Unauthorized"
+    
     # --- Schedule job ---
     hour, minute = map(int, context.user_data['notify_time'].split(':'))
     now = datetime.now(TIMEZONE)
