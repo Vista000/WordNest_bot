@@ -146,13 +146,17 @@ async def email_collected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     save_user_data(user_id, context.user_data.copy())
 
-    save_user(
-        user_id=user_id,
-        lang=context.user_data['language'],
-        level=context.user_data['level'],
-        time=context.user_data['notify_time'],
-        email=context.user_data['email']
-    )
+    try:
+        result = save_user(
+            user_id=user_id,
+            lang=context.user_data['language'],
+            level=context.user_data['level'],
+            time=context.user_data['notify_time'],
+            email=context.user_data['email']
+        )
+        logging.info(f"User saved to API: {result}")
+    except Exception as e:
+        logging.error(f"Failed to save user to API: {e}")
 
     # --- Schedule job ---
     hour, minute = map(int, context.user_data['notify_time'].split(':'))
