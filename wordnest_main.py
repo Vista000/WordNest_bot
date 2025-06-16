@@ -65,7 +65,7 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
-# --- Utility: Save user data ---
+# --- Utility: Save user data locally ---
 def save_user_data(user_id, data):
     try:
         if os.path.exists(DATA_FILE):
@@ -79,11 +79,24 @@ def save_user_data(user_id, data):
     except Exception as e:
         logging.error(f"Error saving user data: {e}")
 
+# --- Utility: Save user to Google Sheet via Apps Script ---
+def save_user(user_id, lang, level, time, email):
+    payload = {
+        "token": SECRET_TOKEN,
+        "user_id": str(user_id),
+        "language": lang,
+        "level": level,
+        "time": time,
+        "email": email
+    }
+    response = requests.post(API_URL, json=payload)
+    return response.text
+
 # --- Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[lang] for lang in languages]
     await update.message.reply_text(
-        "👋 Welcome to WordNest!\nPlease choose your language 🌐:",
+        "\U0001F44B Welcome to WordNest!\nPlease choose your language \U0001F310:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return LANGUAGE
@@ -91,13 +104,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = update.message.text
     if lang not in languages:
-        await update.message.reply_text("❗ Please choose a valid language.")
+        await update.message.reply_text("\u2757 Please choose a valid language.")
         return LANGUAGE
     context.user_data['language'] = lang
 
     keyboard = [[lvl] for lvl in levels]
     await update.message.reply_text(
-        f"✅ Selected language: {lang}\nNow choose your level 📚:",
+        f"\u2705 Selected language: {lang}\nNow choose your level \U0001F4DA:",
         reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     )
     return LEVEL
@@ -105,12 +118,12 @@ async def language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def level_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     level = update.message.text
     if level not in levels:
-        await update.message.reply_text("❗ Please choose a valid level.")
+        await update.message.reply_text("\u2757 Please choose a valid level.")
         return LEVEL
     context.user_data['level'] = level
 
     await update.message.reply_text(
-        "🕒 What time should we send your daily word?\nFormat: HH:MM (e.g. 06:00 or 20:30) — New York Time 🇺🇸"
+        "\U0001F552 What time should we send your daily word?\nFormat: HH:MM (e.g. 06:00 or 20:30) — New York Time \U0001F1FA\U0001F1F8"
     )
     return NOTIFY_TIME
 
@@ -119,11 +132,11 @@ async def notify_time_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         notify_time = datetime.strptime(text, "%H:%M").time()
     except ValueError:
-        await update.message.reply_text("❗ Invalid time format. Please send like 08:30 or 21:00.")
+        await update.message.reply_text("\u2757 Invalid time format. Please send like 08:30 or 21:00.")
         return NOTIFY_TIME
 
     context.user_data['notify_time'] = text
-    await update.message.reply_text("📧 Great! Now please enter your email address:")
+    await update.message.reply_text("\U0001F4E7 Great! Now please enter your email address:")
     return EMAIL
 
 async def email_collected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -133,22 +146,14 @@ async def email_collected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     save_user_data(user_id, context.user_data.copy())
 
-    await update.message.reply_text(
-        f"✅ All set! We'll send your daily word at {context.user_data['notify_time']} ⏰\nUse /cancel to stop."
+    save_user(
+        user_id=user_id,
+        lang=context.user_data['language'],
+        level=context.user_data['level'],
+        time=context.user_data['notify_time'],
+        email=context.user_data['email']
     )
-def save_user(user_id, lang, level, time, email):
-    url = "https://script.google.com/macros/s/AKfycb.../exec"
-    payload = {
-        "token": "SECRET_TOKEN", 
-        "user_id": str(user_id),
-        "language": lang,
-        "level": level,
-        "time": time,
-        "email": email
-    }
-    response = requests.post(url, json=payload)
-    return response.text  # "Success" یا "Unauthorized"
-    
+
     # --- Schedule job ---
     hour, minute = map(int, context.user_data['notify_time'].split(':'))
     now = datetime.now(TIMEZONE)
@@ -167,6 +172,9 @@ def save_user(user_id, lang, level, time, email):
         data={'user_id': user_id}
     )
 
+    await update.message.reply_text(
+        f"\u2705 All set! We'll send your daily word at {context.user_data['notify_time']} \u23F0\nUse /cancel to stop."
+    )
     return ConversationHandler.END
 
 async def send_daily_word(context: CallbackContext):
@@ -193,10 +201,10 @@ async def send_daily_word(context: CallbackContext):
 
     word = word_list[word_index]
     message = (
-        f"📘 Daily Word:\n\n"
-        f"🔤 Word: {word['word']}\n"
-        f"📖 Meaning: {word['meaning']}\n"
-        f"📝 Example: {word['sentence']}"
+        f"\U0001F4D8 Daily Word:\n\n"
+        f"\U0001F524 Word: {word['word']}\n"
+        f"\U0001F4D6 Meaning: {word['meaning']}\n"
+        f"\U0001F4DD Example: {word['sentence']}"
     )
 
     await context.bot.send_message(chat_id=user_id, text=message)
@@ -212,7 +220,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     jobs = context.application.job_queue.get_jobs_by_name(str(user_id))
     for job in jobs:
         job.schedule_removal()
-    await update.message.reply_text("❌ Notifications canceled. Use /start to begin again.")
+    await update.message.reply_text("\u274C Notifications canceled. Use /start to begin again.")
     return ConversationHandler.END
 
 # --- Main ---
