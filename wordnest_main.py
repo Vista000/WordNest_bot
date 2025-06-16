@@ -1,4 +1,5 @@
 import logging
+import os
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -12,8 +13,6 @@ from telegram.ext import (
 from datetime import time, datetime, timedelta
 import pytz
 from threading import Thread
-
-# Flask برای keep_alive
 from flask import Flask
 import asyncio
 
